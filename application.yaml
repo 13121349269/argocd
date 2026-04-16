@@ -1,0 +1,90 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argo-application                    # Application 资源名称，在 argocd 命名空间内唯一
+  namespace: argocd                         # 必须部署在 argocd 命名空间
+  finalizers:                               # 可选：删除 Application 时的清理策略
+  - resources-finalizer.argocd.argoproj.io  # 删除 Application 时同时删除所有创建的资源
+spec:
+  # ============================================
+  # 项目配置
+  # ============================================
+  project: default                          # 所属项目，用于权限隔离和分组管理
+  
+  # ============================================
+  # 源代码配置（从哪里拉取应用配置）
+  # ============================================
+  source:
+    repoURL: https://github.com/Jasmine-Harit/gitops-certification-examples.git  # Git 仓库地址
+    targetRevision: HEAD                    # 分支/tag/commit：HEAD 表示最新提交，也可指定 main、v1.0.0 或 commit hash
+    path: ./simple-app                      # 仓库内的配置文件目录路径（相对于仓库根目录）
+    
+    # 可选：指定目录配置（用于普通 YAML 文件）
+    # directory:
+    #   recurse: true                       # 递归读取子目录中的所有 YAML 文件
+    #   jsonnet: {}                         # Jsonnet 配置选项
+    
+    # 可选：Helm Chart 配置（如果使用 Helm）
+    # helm:
+    #   values: |                           # 直接覆盖 values.yaml 的值
+    #     replicaCount: 3
+    #     image:
+    #       tag: latest
+    #   valuesObject:                       # 或使用结构化对象格式
+    #     service:
+    #       type: NodePort
+    #   releaseName: my-release             # Helm Release 名称
+    #   version: 3.0.0                      # Helm 版本
+  
+  # ============================================
+  # 目标集群配置（部署到哪里）
+  # ============================================
+  destination:
+    server: https://kubernetes.default.svc   # 集群 API Server 地址
+    # server: https://prod-cluster:6443     # 跨集群部署时填写目标集群地址
+    namespace: default                       # 部署到的 Kubernetes 命名空间
+    # name: in-cluster                      # 或使用集群名称（与 server 二选一）
+  
+  # ============================================
+  # 同步策略（如何部署和更新）
+  # ============================================
+  syncPolicy:
+    # 同步选项（控制同步行为）
+    syncOptions:
+    - CreateNamespace=true                   # 自动创建目标命名空间（如果不存在）
+    - ServerSideApply=true                   # 使用服务端 Apply（避免字段冲突）
+    - PrunePropagationPolicy=foreground      # 删除资源时的传播策略：foreground/background/orphan
+    # - Replace=true                         # 使用 replace 代替 apply（会导致服务中断，慎用）
+    # - Validate=false                       # 跳过资源验证（不推荐）
+    
+    # 自动同步配置（启用自动同步）
+    automated:
+      selfHeal: true                         # 自愈：集群状态被手动修改后，自动恢复到 Git 中的状态
+      prune: true                            # 修剪：自动删除 Git 配置中不存在的资源
+      # allowEmpty: false                    # 不允许空资源集（防止误删所有资源）
+    
+    # 可选：同步失败重试策略
+    # retry:
+    #   limit: 5                             # 最大重试次数
+    #   backoff:
+    #     duration: 5s                       # 初始等待时间
+    #     factor: 2                          # 退避因子（每次等待时间翻倍）
+    #     maxDuration: 3m                    # 最大等待时间
+  
+  # ============================================
+  # 可选：忽略差异配置
+  # ============================================
+  # ignoreDifferences:
+  # - group: apps
+  #   kind: Deployment
+  #   jsonPointers:
+  #   - /spec/replicas                       # 忽略 Deployment 的副本数变化
+  # - group: autoscaling
+  #   kind: HorizontalPodAutoscaler
+  #   jsonPointers:
+  #   - /spec/metrics                        # 忽略 HPA 指标配置变化
+  
+  # ============================================
+  # 可选：修订历史限制
+  # ============================================
+  # revisionHistoryLimit: 10                 # 保留的同步历史记录数量（默认 10）

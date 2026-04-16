@@ -1,0 +1,8 @@
+- hosts: master
+  become: yes
+
+  tasks:
+    - name: 部署tigera-operator
+      shell: kubectl create -f /data/playbook/calico/tigera-operator.yaml
+    - name: 部署custom        
+      shell: kubectl create -f /data/playbook/calico/custom-resources.yaml

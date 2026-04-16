@@ -1,0 +1,348 @@
+- hosts: all
+  become: yes
+ 
+  tasks:
+    - name: 设置主机名
+      hostname:
+         name: "{{ new_hostname }}"
+
+    - name: yum update
+      yum:
+        name: "*"
+        state: latest
+
+    - name: 时间同步
+      command: chronyc -a makestep
+      ignore_errors: yes
+
+- hosts: all
+  # 提权
+  become: yes
+  
+  vars:
+    dir: 
+      - containerd
+      - kernel
+  tasks:
+    - name: 创建data目录
+      file:
+        path: /data
+        state: directory
+    - name: stop firewalld
+      service:
+        name: firewalld
+        #立即停止
+        state: stopped
+        #开机不启动
+        enabled: no
+    - name: kernel和containerd 目录拷贝到其他节点
+      copy:
+        src: /data/{{ item }}/
+        dest: /data/{{ item }}/
+      loop: "{{ dir }}"
+    - name: 卸载冲突包
+      yum:
+        name:
+          - kernel-tools
+          - kernel-headers
+          - kernel-tools-libs
+        state: absent
+      ignore_errors: yes
+    - name: install kernel rpm
+      yum:
+        name: 
+          - /data/kernel/kernel-lt-5.4.278-1.el7.elrepo.x86_64.rpm
+          - /data/kernel/kernel-lt-devel-5.4.278-1.el7.elrepo.x86_64.rpm
+          - /data/kernel/kernel-lt-headers-5.4.278-1.el7.elrepo.x86_64.rpm
+          - /data/kernel/kernel-lt-tools-5.4.278-1.el7.elrepo.x86_64.rpm
+          - /data/kernel/kernel-lt-tools-libs-5.4.278-1.el7.elrepo.x86_64.rpm
+          - /data/kernel/kernel-lt-tools-libs-devel-5.4.278-1.el7.elrepo.x86_64.rpm
+        state: present
+
+    - name: set default kernel
+      shell: grub2-set-default 0
+
+    - name: regenerate grub
+      shell: grub2-mkconfig -o /boot/grub2/grub.cfg
+
+    - name: set SELinux permissive
+      selinux:
+        policy: targeted
+        state: permissive
+
+    - name: set selinux config
+      lineinfile:
+        path: /etc/selinux/config
+        regexp: '^SELINUX='
+        line: 'SELINUX=permissive'
+
+    - name: add kubernetes yum repo
+      copy:
+        dest: /etc/yum.repos.d/kubernetes.repo
+        content: |
+          [kubernetes]
+          name=Kubernetes
+          baseurl=https://pkgs.k8s.io/core:/stable:/v1.31/rpm/
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://pkgs.k8s.io/core:/stable:/v1.31/rpm/repodata/repomd.xml.key
+          exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+
+    - name: yum install kubelet kubeadm kubectl
+      yum:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        disable_excludes: kubernetes
+
+    - name: install conntrack
+      yum:
+        name: conntrack-tools
+        state: present   
+
+    - name: start kubelet
+      service:
+        name: kubelet
+        state: started
+        enabled: yes
+
+    - name: set k8s-sysctl.conf
+      template:
+        src: k8s-sysctl.j2
+        dest: /etc/sysctl.d/k8s-sysctl.conf
+    - name: sysctl --system
+      command: sysctl --system
+
+    - name: set limits
+      template:
+        src: limits.j2
+        dest: /etc/security/limits.d/bcs-limits.conf
+
+    - name: disable swap temporarily
+      command: swapoff -a
+      #只有系统存在swap 才执行，防止报错
+      when: ansible_swaptotal_mb > 0
+    
+    - name: disable swap permanently
+      replace:
+        #所有包含swap的行添加注释
+        path: /etc/fstab
+        #regexp: '^(.*swap.*)$'
+        regexp: '^(\S+\s+\S+\s+swap\s+.*)$'
+        replace: '#\1'
+
+   # - name: wget containerd 1.7.27
+   #   get_url:
+   #     url: https://github.com/containerd/containerd/releases/download/v1.7.27/containerd-1.7.27-linux-amd64.tar.gz
+   #     dest: /data/containerd-1.7.27-linux-amd64.tar.gz
+
+    - name: extract file
+      unarchive:
+        src: /data/containerd/containerd-1.7.27-linux-amd64.tar.gz
+        dest: /usr/local
+        #不加从本地找文件并传到远程主机再解压，加上直接再远程机器解压
+        remote_src: yes
+        #防止重复解压
+        creates: /usr/local/containerd
+
+    - name: set containerd.service
+      template:
+        src: containerd_service.j2
+        dest: /etc/systemd/system/containerd.service 
+
+    - name: reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: start containerd
+      service:
+        name: containerd
+        state: started
+        enabled: yes
+
+    #- name: dowload runc
+    #  get_url:
+    #    url: https://github.com/opencontainers/runc/releases/download/v1.2.0-rc.3/runc.amd64
+    #    dest: /data/runc.amd64
+
+    - name: install runc
+      copy:
+        src: /data/containerd/runc.amd64
+        dest: /usr/local/sbin/runc
+        mode: '0755'
+        #如果远程主机文件存在
+        remote_src: yes
+        #不覆盖
+        force: no
+
+    - name: create dir
+      file:
+        path: /etc/containerd
+        state: directory
+
+    - name: generate config
+      shell: containerd config default > /etc/containerd/config.toml
+
+    - name: change registry
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'registry.k8s.io'
+        replace: 'registry.aliyuncs.com/google_containers'
+
+    - name: set cgroup = true
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup=false'
+        replace: 'SystemdCgroup = true'
+
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: restart containerd
+      service:
+        name: containerd
+        state: restarted
+     
+    - name: create docker.io dir
+      file:
+        path: /etc/containerd/certs.d/docker.io
+        state: directory
+
+    - name: create k8s registry dir
+      file:
+        path: /etc/containerd/certs.d/registry.k8s.io
+        state: directory
+
+    - name: config docker mirror
+      copy:
+        dest: /etc/containerd/certs.d/docker.io/hosts.toml
+        content: |
+          server = "https://docker.io"
+          
+          [host."https://docker.m.daocloud.io"]
+            capabilities = ["pull","resolve"]
+
+          [host."https://reg-mirror.giniu.com"]
+            capabilities = ["pull","resolve"]
+
+    - name: config k8s mirror
+      copy:
+        dest: /etc/containerd/certs.d/registry.k8s.io/hosts.toml
+        content:
+          server = "https://registry.k8s.io"
+          
+          [host."https://k8s.m.daocloud.io"]
+            capabilities = ["pull","resolve","push"]
+
+    - name: restart containerd
+      service:
+        name: containerd
+        state: restarted
+  
+
+- hosts: master
+  become: yes
+
+  vars:
+    api_server_ip: "192.168.1.223"
+    k8s_version: "1.31.0"
+
+  tasks:
+    - name: create kubernetes dir
+      file:
+        path: /etc/kubernetes
+        state: directory
+
+    - name: generate kubeadm config
+      shell: kubeadm config print init-defaults > /etc/kubernetes/init-default.yaml
+      args:
+        creates: /etc/kubernetes/init-default.yaml
+
+    - name: replace image repository
+      replace:
+        path: /etc/kubernetes/init-default.yaml
+        regexp: 'registry.k8s.io'
+        replace: "registry.aliyuncs.com/google_containers"
+
+    - name: set apisserver ip
+      replace:
+        path: /etc/kubernetes/init-default.yaml
+        regexp: "1.2.3.4"
+        replace: "{{ api_server_ip }}"
+
+    - name: set pod subnet
+      # 匹配已存在行并在此行下插入一行
+      lineinfile:
+        path: /etc/kubernetes/init-default.yaml
+        insertafter: "serviceSubnet"
+        line: '  podSubnet: 10.244.0.0/16'
+    
+    - name: set kubernetes version
+      replace:
+        path: /etc/kubernetes/init-default.yaml
+        regexp: "kubernetesVersion:.*"
+        replace: "kubernetesVersion: {{ k8s_version }}"
+
+    - name: pull k8s images
+      command: >
+        kubeadm config images pull --image-repository registry.aliyuncs.com/google_containers --kubernetes-version v1.31.0
+
+    - name: 删除 kubelet 历史配置
+      file:
+        path: /var/lib/kubelet/kubeadm-flags.env
+        state: absent   
+  
+    - name: 删除 nodeRegistration.name
+      lineinfile:
+        path: /etc/kubernetes/init-default.yaml
+        regexp: '^\s*name:\s*node'
+        state: absent
+
+    - name: init kubernetes cluster
+      shell: kubeadm init --config /etc/kubernetes/init-default.yaml
+      register: kubeadm_init
+      ignore_errors: yes
+
+    - name: 创建 .kube 目录
+      file:
+        path: /root/.kube
+        state: directory 
+    - name: 设置kubeconfig
+      copy:
+        src:  /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+
+    - name: 创建join token
+      shell: kubeadm token create --print-join-command
+      register: join_cmd
+  
+    - name: token存进变量
+      set_fact:
+        kube_join_cmd: "{{ join_cmd.stdout }}"
+
+- hosts: node
+  become: yes
+  tasks:
+    - name: node 节点加入集群
+      #从 master 机器拿变量给node使用
+      shell: "{{ hostvars[groups['master'][0]].kube_join_cmd }} --ignore-preflight-errors=all"
+
+- hosts: master
+  become: yes
+  tasks:
+    - name: 命令补全
+      yum:
+        name: bash-completion
+        state: present
+
+#    - name: source
+#      shell: | 
+#        source /usr/share/bash-completion/bash_completion
+#        source <(kubectl completion bash)
+#        echo "source <(kubectl completion bash)" >> ~/.bashrc
+#      args:
+#        executable: /bin/bash
+  

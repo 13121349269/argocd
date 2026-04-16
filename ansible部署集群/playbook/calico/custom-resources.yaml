@@ -1,0 +1,28 @@
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  # 镜像仓库配置
+  registry: quay.io
+  imagePath: calico
+  controlPlaneTolerations:
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/control-plane
+    operator: Exists
+  - effect: NoExecute
+    key: node-role.kubernetes.io/etcd
+    operator: Exists
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/master
+    operator: Exists
+  # imagePrefix 留空或删除
+  # imagePrefix: calico
+  calicoNetwork:
+    bgp: Enabled
+    ipPools:
+    - cidr: 10.244.0.0/16
+      encapsulation: VXLAN
+      natOutgoing: Enabled
+    nodeAddressAutodetectionV4:
+      firstFound: true

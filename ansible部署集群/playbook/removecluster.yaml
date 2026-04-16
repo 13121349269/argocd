@@ -1,0 +1,34 @@
+- name: Reset Kubernetes node
+  hosts: master, node
+  become: yes
+  
+  tasks:
+    - name: 重置 kubeadm
+      command: kubeadm reset -f
+      ignore_errors: yes
+    
+    - name: 清理 Kubernetes 相关文件
+      shell: |
+        rm -rf /etc/kubernetes/
+        rm -rf /var/lib/etcd/
+        rm -rf /var/lib/kubelet/
+        rm -rf /etc/cni/
+        rm -rf /var/lib/cni/
+        rm -rf /var/log/pods/
+        rm -rf /var/lib/kube-proxy/
+      ignore_errors: yes
+    
+    - name: 清理 iptables 规则
+      shell: |
+        iptables -F
+        iptables -t nat -F
+        iptables -t mangle -F
+        iptables -X
+      ignore_errors: yes
+    
+    - name: 清理网络接口
+      shell: |
+        ip link delete cni0 2>/dev/null
+        ip link delete flannel.1 2>/dev/null
+        ip link delete docker0 2>/dev/null
+      ignore_errors: yes
